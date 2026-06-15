@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Physics Sandbox Pro</title>
+<title>Physics Sandbox</title>
 <style>
 html, body {
     margin: 0;
@@ -12,73 +12,19 @@ html, body {
     background: #111;
     width: 100%;
     height: 100%;
-    touch-action: none;
+    touch-action: none; /* スマホのスワイプによる画面スクロールを完全に防止 */
     -webkit-user-select: none;
     user-select: none;
+    -webkit-touch-callout: none;
 }
 canvas {
     display: block;
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 1;
-}
-/* スマホ用UIメニューのスタイル */
-.menu {
-    position: absolute;
-    bottom: 25px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 8px;
-    z-index: 10;
-    background: rgba(255, 255, 255, 0.15);
-    padding: 6px 12px;
-    border-radius: 30px;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-}
-.btn {
-    border: none;
-    outline: none;
-    padding: 10px 14px;
-    border-radius: 20px;
-    font-size: 14px;
-    font-weight: bold;
-    cursor: pointer;
-    background: rgba(255, 255, 255, 0.2);
-    color: #fff;
-    transition: background 0.2s, transform 0.1s;
-}
-.btn.active {
-    background: #fff;
-    color: #111;
-}
-.btn:active {
-    transform: scale(0.95);
-}
-.btn-clear {
-    background: rgba(255, 68, 68, 0.4);
-}
-.btn-clear:active {
-    background: rgba(255, 68, 68, 0.7);
 }
 </style>
 </head>
 <body>
 
 <canvas id="canvas"></canvas>
-
-<div class="menu">
-    <button class="btn active" id="mode-particle">● 玉</button>
-    <button class="btn" id="mode-wall">─ 壁</button>
-    <button class="btn" id="mode-attract">＋ 引力</button>
-    <button class="btn" id="mode-repel">－ 斥力</button>
-    <button class="btn btn-clear" id="btn-clear">リセット</button>
-</div>
 
 <script>
 const canvas = document.getElementById("canvas");
@@ -91,44 +37,30 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-// 右クリックメニューを禁止
+// コンテキストメニュー（右クリック長押しメニュー）を禁止
 canvas.addEventListener("contextmenu", e => e.preventDefault());
-
-// 現在の配置モード管理
-let currentMode = 'particle'; 
-let isDragging = false;
-let startX = 0, startY = 0;
-let currX = 0, currY = 0;
 
 const particles = [];
 const fields = [];
 const walls = [];
 
-// UIのイベント設定
-document.getElementById('mode-particle').addEventListener('click', (e) => switchMode('particle', e.target));
-document.getElementById('mode-wall').addEventListener('click', (e) => switchMode('wall', e.target));
-document.getElementById('mode-attract').addEventListener('click', (e) => switchMode('attract', e.target));
-document.getElementById('mode-repel').addEventListener('click', (e) => switchMode('repel', e.target));
-document.getElementById('btn-clear').addEventListener('click', () => {
-    particles.length = 0;
-    fields.length = 0;
-    walls.length = 0;
-});
+// --- ジェスチャ判定用の状態管理 ---
+const DRAG_THRESHOLD = 20;   // 指のわずかなブレを許容するため、少し大きめに設定
+const LONG_PRESS_TIME = 400; // 長押し判定時間(ms)
 
-function switchMode(mode, targetBtn) {
-    currentMode = mode;
-    document.querySelectorAll('.menu .btn').forEach(btn => {
-        if(!btn.classList.contains('btn-clear')) btn.classList.remove('active');
-    });
-    targetBtn.classList.add('active');
-}
+let inputState = 'IDLE'; // 'IDLE', 'WAITING', 'DRAGGING', 'LONG_PRESS'
+let startX = 0;
+let startY = 0;
+let currX = 0;
+let currY = 0;
+let pressTimer = null;
 
 class Particle {
     constructor(x, y) {
         this.x = x;
         this.y = y;
-        this.vx = (Math.random() - 0.5) * 6;
-        this.vy = (Math.random() - 0.5) * 6;
+        this.vx = (Math.random() - 0.5) * 4;
+        this.vy = (Math.random() - 0.5) * 4;
         this.r = 10;
     }
 
@@ -138,7 +70,7 @@ class Particle {
             let dy = f.y - this.y;
             let d2 = dx * dx + dy * dy;
 
-            if (d2 < 400) d2 = 400; // 近づきすぎた時の計算破綻防止
+            if (d2 < 400) d2 = 400;
 
             let d = Math.sqrt(d2);
             let force = f.strength / d2;
@@ -147,7 +79,7 @@ class Particle {
             this.vy += force * dy / d;
         }
 
-        // 速度が無限に速くなるのを防ぐリミッター
+        // 速度リミッター（物理演算が破綻しないように制限）
         const speed = Math.hypot(this.vx, this.vy);
         if (speed > 15) {
             this.vx = (this.vx / speed) * 15;
@@ -157,17 +89,17 @@ class Particle {
         this.x += this.vx;
         this.y += this.vy;
 
-        // 画面端の衝突リバウンド（少しエネルギーを減衰させて安定化）
-        if (this.x < this.r) { this.x = this.r; this.vx *= -0.8; }
-        if (this.x > canvas.width - this.r) { this.x = canvas.width - this.r; this.vx *= -0.8; }
-        if (this.y < this.r) { this.y = this.r; this.vy *= -0.8; }
-        if (this.y > canvas.height - this.r) { this.y = canvas.height - this.r; this.vy *= -0.8; }
+        // 画面端の反射
+        if (this.x < this.r) { this.x = this.r; this.vx *= -1; }
+        if (this.x > canvas.width - this.r) { this.x = canvas.width - this.r; this.vx *= -1; }
+        if (this.y < this.r) { this.y = this.r; this.vy *= -1; }
+        if (this.y > canvas.height - this.r) { this.y = canvas.height - this.r; this.vy *= -1; }
     }
 
     draw() {
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-        ctx.fillStyle = "#FFF";
+        ctx.fillStyle = "white";
         ctx.fill();
     }
 }
@@ -178,18 +110,14 @@ class Field {
         this.y = y;
         this.strength = strength;
         this.color = color;
-        this.r = 16;
+        this.r = 12;
     }
 
     draw() {
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
         ctx.fillStyle = this.color;
-        // ネオンっぽく光らせるエフェクト
-        ctx.shadowColor = this.color;
-        ctx.shadowBlur = 12;
         ctx.fill();
-        ctx.shadowBlur = 0; // 他の描画への影響をリセット
     }
 }
 
@@ -206,57 +134,87 @@ class Wall {
         ctx.moveTo(this.x1, this.y1);
         ctx.lineTo(this.x2, this.y2);
         ctx.strokeStyle = "#AAA";
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 3;
         ctx.lineCap = "round";
         ctx.stroke();
     }
 }
 
-// --- ポインターイベント (タップ・ドラッグ一元管理) ---
+// --- 入力制御 (元のジェスチャー操作を正確に再現) ---
 canvas.addEventListener("pointerdown", e => {
-    if (e.target !== canvas) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     startX = e.clientX;
     startY = e.clientY;
     currX = startX;
     currY = startY;
-    isDragging = true;
+    
+    inputState = 'WAITING';
+
+    pressTimer = setTimeout(() => {
+        if (inputState === 'WAITING') {
+            inputState = 'LONG_PRESS';
+            if (navigator.vibrate) navigator.vibrate(20);
+        }
+    }, LONG_PRESS_TIME);
 
     canvas.setPointerCapture(e.pointerId);
 });
 
 canvas.addEventListener("pointermove", e => {
-    if (!isDragging) return;
+    if (inputState === 'IDLE') return;
+
     currX = e.clientX;
     currY = e.clientY;
-});
 
-canvas.addEventListener("pointerup", e => {
-    if (!isDragging) return;
-    isDragging = false;
-    canvas.releasePointerCapture(e.pointerId);
-
-    const dist = Math.hypot(currX - startX, currY - startY);
-
-    if (currentMode === 'particle') {
-        particles.push(new Particle(startX, startY));
-    } else if (currentMode === 'wall') {
-        if (dist > 10) { // 短すぎる壁は生成しない
-            walls.push(new Wall(startX, startY, currX, currY));
+    if (inputState === 'WAITING') {
+        const dist = Math.hypot(currX - startX, currY - startY);
+        if (dist > DRAG_THRESHOLD) {
+            clearTimeout(pressTimer);
+            inputState = 'DRAGGING';
         }
-    } else if (currentMode === 'attract') {
-        fields.push(new Field(startX, startY, -160, "deepskyblue")); // 引力
-    } else if (currentMode === 'repel') {
-        fields.push(new Field(startX, startY, 160, "red")); // 斥力
     }
 });
 
-canvas.addEventListener("pointercancel", e => {
-    isDragging = false;
+canvas.addEventListener("pointerup", e => {
+    if (inputState === 'IDLE') return;
+
+    clearTimeout(pressTimer);
+
+    if (inputState === 'WAITING') {
+        // タップ（白玉）
+        particles.push(new Particle(startX, startY));
+    } else if (inputState === 'DRAGGING') {
+        // ドラッグ（壁）
+        const dist = Math.hypot(currX - startX, currY - startY);
+        if (dist > 5) {
+            walls.push(new Wall(startX, startY, currX, currY));
+        }
+    } else if (inputState === 'LONG_PRESS') {
+        // 長押し→スワイプ（力場）
+        const dx = currX - startX;
+        const dist = Math.hypot(currX - startX, currY - startY);
+        
+        if (dist > 25) {
+            if (dx < 0) {
+                fields.push(new Field(startX, startY, 120, "red")); // 斥力
+            } else {
+                fields.push(new Field(startX, startY, -120, "deepskyblue")); // 引力
+            }
+        }
+    }
+
+    inputState = 'IDLE';
     canvas.releasePointerCapture(e.pointerId);
 });
 
-// --- 物理演算エンジン ---
+canvas.addEventListener("pointercancel", e => {
+    clearTimeout(pressTimer);
+    inputState = 'IDLE';
+    canvas.releasePointerCapture(e.pointerId);
+});
+
+// --- 物理演算 (すり抜け防止のためアルゴリズムを強化) ---
 function solveParticleCollisions() {
     for (let i = 0; i < particles.length; i++) {
         for (let j = i + 1; j < particles.length; j++) {
@@ -273,28 +231,19 @@ function solveParticleCollisions() {
             const ny = dy / dist;
             const overlap = minDist - dist;
             
-            // めり込みの補正
             a.x -= nx * overlap * 0.5;
             a.y -= ny * overlap * 0.5;
             b.x += nx * overlap * 0.5;
             b.y += ny * overlap * 0.5;
             
-            // 弾性衝突（速度交換）
-            const kx = a.vx - b.vx;
-            const ky = a.vy - b.vy;
-            const p = nx * kx + ny * ky;
-            
-            if (p > 0) { 
-                a.vx -= p * nx;
-                a.vy -= p * ny;
-                b.vx += p * nx;
-                b.vy += p * ny;
-            }
+            const avx = a.vx; const avy = a.vy;
+            a.vx = b.vx; a.vy = b.vy;
+            b.vx = avx; b.vy = avy;
         }
     }
 }
 
-// 壁との衝突判定（点と線分の最短距離アルゴリズムで、すり抜けを完全防止）
+// 線の交差判定ではなく、点と線分の最短距離による堅牢な衝突判定に変更
 function solveWallCollisions() {
     for (const p of particles) {
         for (const wall of walls) {
@@ -306,11 +255,9 @@ function solveWallCollisions() {
             const ab2 = abx * abx + aby * aby;
             if (ab2 === 0) continue;
             
-            // 線分に対する射影係数 t を 0〜1 にクランプ
             let t = (apx * abx + apy * aby) / ab2;
-            t = Math.max(0, Math.min(1, t));
+            t = Math.max(0, Math.min(1, t)); // 線分上にクランプ
             
-            // 壁の線分上で、最も粒子に近い座標 (cx, cy)
             const cx = wall.x1 + t * abx;
             const cy = wall.y1 + t * aby;
             
@@ -318,24 +265,19 @@ function solveWallCollisions() {
             const cpy = p.y - cy;
             const dist = Math.hypot(cpx, cpy);
             
-            // 衝突判定（半径未満に近づいたら押し戻す）
             if (dist < p.r && dist > 0) {
                 const nx = cpx / dist;
                 const ny = cpy / dist;
                 
-                // 位置のめり込み補正
+                // めり込み解消
                 p.x = cx + nx * p.r;
                 p.y = cy + ny * p.r;
                 
-                // 反射ベクトルの計算
+                // 反射ベクトル計算
                 const dot = p.vx * nx + p.vy * ny;
                 if (dot < 0) { 
                     p.vx -= 2 * dot * nx;
                     p.vy -= 2 * dot * ny;
-                    
-                    // 挙動安定化のために壁反射時は20%減速
-                    p.vx *= 0.8;
-                    p.vy *= 0.8;
                 }
             }
         }
@@ -355,15 +297,51 @@ function draw() {
     for (const f of fields) f.draw();
     for (const p of particles) p.draw();
 
-    // 壁のドラッグ配置中のプレビュー線を描画
-    if (isDragging && currentMode === 'wall') {
+    // --- UIオーバーレイ (元のデザインを完全踏襲) ---
+    if (inputState === 'DRAGGING') {
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.lineTo(currX, currY);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-        ctx.lineWidth = 6;
+        ctx.strokeStyle = "rgba(170, 170, 170, 0.5)";
+        ctx.lineWidth = 3;
         ctx.lineCap = "round";
         ctx.stroke();
+    } else if (inputState === 'LONG_PRESS') {
+        const dx = currX - startX;
+        const dist = Math.hypot(currX - startX, currY - startY);
+        const isLeft = dist > 25 && dx < 0;
+        const isRight = dist > 25 && dx >= 0;
+
+        ctx.beginPath();
+        ctx.arc(startX, startY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(currX, currY);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        ctx.stroke();
+
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        // 左（斥力）
+        ctx.beginPath();
+        ctx.arc(startX - 65, startY, 28, 0, Math.PI * 2);
+        ctx.fillStyle = isLeft ? "red" : "rgba(255, 0, 0, 0.2)";
+        ctx.fill();
+        ctx.fillStyle = "white";
+        ctx.fillText("斥力", startX - 65, startY);
+
+        // 右（引力）
+        ctx.beginPath();
+        ctx.arc(startX + 65, startY, 28, 0, Math.PI * 2);
+        ctx.fillStyle = isRight ? "deepskyblue" : "rgba(0, 191, 255, 0.2)";
+        ctx.fill();
+        ctx.fillStyle = "white";
+        ctx.fillText("引力", startX + 65, startY);
     }
 }
 
